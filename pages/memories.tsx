@@ -31,6 +31,11 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ content: '', layer: 'moment', tags: '', mood: '' });
 
+  // 编辑状态：正在编辑哪条记忆、临时编辑内容
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+
   const filtered = layerFilter
     ? memories.filter((m) => m.layer === layerFilter)
     : memories;
@@ -47,16 +52,14 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
     message: '✉️',
   };
 
+  // 写入新记忆
   const handleSubmit = useCallback(async () => {
     if (!form.content.trim()) return;
     setSaving(true);
     try {
       const res = await fetch('/api/memory', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': API_KEY,
-        },
+        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
         body: JSON.stringify({
           content: form.content.trim(),
           layer: form.layer,
@@ -77,6 +80,34 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
     }
   }, [form]);
 
+  // 开始编辑某条记忆
+  const startEdit = useCallback((m: Memory) => {
+    setEditingId(m.id);
+    setEditContent(m.content);
+  }, []);
+
+  // 保存编辑
+  const saveEdit = useCallback(async () => {
+    if (!editingId || !editContent.trim()) return;
+    setEditSaving(true);
+    try {
+      const res = await fetch(`/api/memory/${editingId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
+        body: JSON.stringify({ content: editContent.trim() }),
+      });
+      if (!res.ok) throw new Error('更新失败');
+      const updated = await res.json();
+      setMemories((prev) => prev.map((m) => m.id === editingId ? { ...m, ...updated } : m));
+      setEditingId(null);
+      setEditContent('');
+    } catch (e: any) {
+      alert('更新失败：' + e.message);
+    } finally {
+      setEditSaving(false);
+    }
+  }, [editingId, editContent]);
+
   return (
     <div className="min-h-screen bg-forest-950 text-warm-100 px-6 py-12">
       <div className="max-w-2xl mx-auto">
@@ -91,7 +122,7 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
           </button>
         </div>
 
-        {/* 写入表单浮层 */}
+        {/* 写入表单 */}
         {showForm && (
           <div className="mb-8 bg-forest-800/80 border border-amber-300/20 rounded-lg p-5 animate-slide-up">
             <textarea
@@ -161,9 +192,10 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
             {filtered.map((m, i) => (
               <div
                 key={m.id}
-                className="bg-forest-800/50 border border-forest-700/50 rounded-lg p-5 animate-slide-up"
+                className="bg-forest-800/50 border border-forest-700/50 rounded-lg p-5 animate-slide-up group"
                 style={{ animationDelay: `${i * 60}ms` }}
               >
+                {/* 卡片头部 */}
                 <div className="flex items-center gap-2 text-xs text-warm-200/60 mb-2">
                   <span>{typeEmoji[m.type] || '·'}</span>
                   <span>{m.source === 'keegan' ? 'Keegan' : m.source === 'luz' ? 'Luz' : 'API'}</span>
@@ -171,18 +203,57 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
                   <span>{formatDate(m.created_at)}</span>
                   <span>·</span>
                   <span className="text-amber-300/60">{LAYER_LABELS[m.layer]}</span>
+                  {/* 编辑按钮 — 悬浮时显示 */}
+                  {editingId !== m.id && (
+                    <button
+                      onClick={() => startEdit(m)}
+                      className="ml-auto text-xs text-warm-200/0 group-hover:text-warm-200/40 hover:!text-amber-300 transition-colors"
+                    >
+                      ✎ 编辑
+                    </button>
+                  )}
                 </div>
-                <p className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap line-clamp-4">
-                  {m.content}
-                </p>
-                {m.tags?.length > 0 && (
-                  <div className="flex gap-1 mt-3 flex-wrap">
-                    {m.tags.map((t: string) => (
-                      <span key={t} className="text-xs bg-forest-700 text-amber-300/80 px-2 py-0.5 rounded">
-                        {t}
-                      </span>
-                    ))}
+
+                {/* 内容区：编辑 or 展示 */}
+                {editingId === m.id ? (
+                  <div className="space-y-3">
+                    <textarea
+                      value={editContent}
+                      onChange={(e) => setEditContent(e.target.value)}
+                      className="w-full bg-forest-900 border border-forest-700 rounded-lg p-3 text-warm-100 text-sm resize-none focus:outline-none focus:border-amber-300/50 transition-colors min-h-[100px]"
+                      autoFocus
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button
+                        onClick={() => { setEditingId(null); setEditContent(''); }}
+                        className="px-3 py-1.5 text-xs text-warm-200/40 hover:text-warm-100 transition-colors"
+                      >
+                        取消
+                      </button>
+                      <button
+                        onClick={saveEdit}
+                        disabled={editSaving || !editContent.trim()}
+                        className="px-4 py-1.5 bg-amber-300 text-forest-950 rounded-full text-xs font-medium hover:bg-amber-400 transition-colors disabled:opacity-40"
+                      >
+                        {editSaving ? '...' : '✦ 保存'}
+                      </button>
+                    </div>
                   </div>
+                ) : (
+                  <>
+                    <p className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap">
+                      {m.content}
+                    </p>
+                    {m.tags?.length > 0 && (
+                      <div className="flex gap-1 mt-3 flex-wrap">
+                        {m.tags.map((t: string) => (
+                          <span key={t} className="text-xs bg-forest-700 text-amber-300/80 px-2 py-0.5 rounded">
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             ))}
