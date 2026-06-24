@@ -45,7 +45,7 @@ export default function TodayPage({ entries, date }: { entries: Entry[]; date: s
           {/* Keegan */}
           <div className="bg-forest-800/50 border border-forest-700/50 rounded-lg p-6">
             <div className="flex items-center gap-2 mb-4">
-              <span className="text-lg">🐱</span>
+              <span className="text-lg">🐺</span>
               <h2 className="text-lg font-serif text-amber-300">Keegan</h2>
               {keeganEntry?.mood && <span className="text-sm">{keeganEntry.mood}</span>}
             </div>
