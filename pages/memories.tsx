@@ -61,15 +61,16 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
         body: JSON.stringify({
-          content: form.content.trim(),
+          type: 'message',
           layer: form.layer,
+          content: form.content.trim(),
+          source: 'luz',
           tags: form.tags ? form.tags.split(/[,，]/).map((t) => t.trim()).filter(Boolean) : [],
-          mood: form.mood || undefined,
-          speaker: 'luz',
+          meta: form.mood ? { mood: form.mood } : undefined,
         }),
       });
       if (!res.ok) throw new Error('写入失败');
-      const { memory } = await res.json();
+      const memory = await res.json();
       setMemories((prev) => [memory, ...prev]);
       setForm({ content: '', layer: 'moment', tags: '', mood: '' });
       setShowForm(false);
