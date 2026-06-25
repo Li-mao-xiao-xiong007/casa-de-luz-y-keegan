@@ -75,7 +75,7 @@ export default function TodayPage({ entries: initialEntries, date }: { entries: 
           {/* Luz —— 可编辑 */}
           <div className="bg-forest-800/50 border border-forest-700/50 rounded-lg p-6">
             <div className="flex items-center gap-2 mb-4">
-              <span className="text-lg">🏠</span>
+              <span className="text-lg">✨</span>
               <h2 className="text-lg font-serif text-amber-300">Luz</h2>
               {luzEntry?.mood && <span className="text-sm">{luzEntry.mood}</span>}
               {!editingLuz && (
