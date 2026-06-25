@@ -109,6 +109,21 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
     }
   }, [editingId, editContent]);
 
+  // 删除记忆
+  const handleDelete = useCallback(async (id: string) => {
+    if (!confirm('确定要删除这条记忆吗？')) return;
+    try {
+      const res = await fetch(`/api/memory/${id}`, {
+        method: 'DELETE',
+        headers: { 'x-api-key': API_KEY },
+      });
+      if (!res.ok) throw new Error('删除失败');
+      setMemories((prev) => prev.filter((m) => m.id !== id));
+    } catch (e: any) {
+      alert('删除失败：' + e.message);
+    }
+  }, []);
+
   return (
     <div className="min-h-screen bg-forest-950 text-warm-100 px-6 py-12">
       <div className="max-w-2xl mx-auto">
@@ -204,14 +219,22 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
                   <span>{formatDate(m.created_at)}</span>
                   <span>·</span>
                   <span className="text-amber-300/60">{LAYER_LABELS[m.layer]}</span>
-                  {/* 编辑按钮 — 悬浮时显示 */}
+                  {/* 编辑/删除按钮 — 悬浮时显示 */}
                   {editingId !== m.id && (
-                    <button
-                      onClick={() => startEdit(m)}
-                      className="ml-auto text-xs text-warm-200/0 group-hover:text-warm-200/40 hover:!text-amber-300 transition-colors"
-                    >
-                      ✎ 编辑
-                    </button>
+                    <>
+                      <button
+                        onClick={() => startEdit(m)}
+                        className="ml-auto text-xs text-warm-200/0 group-hover:text-warm-200/40 hover:!text-amber-300 transition-colors"
+                      >
+                        ✎
+                      </button>
+                      <button
+                        onClick={() => handleDelete(m.id)}
+                        className="text-xs text-warm-200/0 group-hover:text-warm-200/40 hover:!text-red-400 transition-colors"
+                      >
+                        🗑
+                      </button>
+                    </>
                   )}
                 </div>
 
