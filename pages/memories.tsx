@@ -224,13 +224,13 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
                     <>
                       <button
                         onClick={() => startEdit(m)}
-                        className="ml-auto text-xs text-warm-200/0 group-hover:text-warm-200/40 hover:!text-amber-300 transition-colors"
+                        className="ml-auto text-xs text-warm-200/50 hover:text-amber-300 transition-colors"
                       >
                         ✎
                       </button>
                       <button
                         onClick={() => handleDelete(m.id)}
-                        className="text-xs text-warm-200/0 group-hover:text-warm-200/40 hover:!text-red-400 transition-colors"
+                        className="text-xs text-warm-200/50 hover:text-red-400 transition-colors"
                       >
                         🗑
                       </button>
