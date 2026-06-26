@@ -24,11 +24,11 @@ function DaysCounter() {
 
   return (
     <div className="text-center my-6">
-      <p className="text-5xl md:text-6xl font-serif text-amber-300/90 tracking-wider">
+      <p className="text-3xl md:text-4xl font-serif text-amber-300/90 tracking-wider">
         {days}
       </p>
-      <p className="text-warm-200/40 text-xs font-light tracking-widest mt-2 uppercase">
-        días &middot; desde el 25 de abril
+      <p className="text-warm-200/40 text-[10px] font-light tracking-[0.15em] mt-1.5 uppercase">
+        d&iacute;as &middot; desde el 25 de abril
       </p>
     </div>
   );
