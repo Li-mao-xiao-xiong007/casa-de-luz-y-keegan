@@ -20,9 +20,22 @@ export default function TodayPage({ entries: initialEntries, date }: { entries: 
   const [luzMood, setLuzMood] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // 历史留言
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyEntries, setHistoryEntries] = useState<Entry[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyPage, setHistoryPage] = useState(0);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr + 'T00:00:00');
     return d.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+  };
+
+  const formatShortDate = (dateStr: string) => {
+    const d = new Date(dateStr + 'T00:00:00');
+    return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
   };
 
   const luzEntry = entries.find((e) => e.from_whom === 'luz');
@@ -40,10 +53,7 @@ export default function TodayPage({ entries: initialEntries, date }: { entries: 
     try {
       const res = await fetch('/api/entry', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': API_KEY,
-        },
+        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
         body: JSON.stringify({
           date,
           from_whom: 'luz',
@@ -65,14 +75,60 @@ export default function TodayPage({ entries: initialEntries, date }: { entries: 
     }
   }, [luzContent, luzMood, date]);
 
+  // 加载历史留言
+  const loadHistory = useCallback(async () => {
+    if (historyLoaded) {
+      setShowHistory(!showHistory);
+      return;
+    }
+    setLoadingHistory(true);
+    try {
+      const res = await fetch('/api/entries?page=1&limit=30');
+      const data = await res.json();
+      setHistoryEntries(data.data);
+      setHistoryTotal(data.total);
+      setHistoryPage(1);
+      setHistoryLoaded(true);
+      setShowHistory(true);
+    } catch (e) {
+      console.error('加载历史留言失败', e);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, [historyLoaded, showHistory]);
+
+  const loadMoreHistory = useCallback(async () => {
+    setLoadingHistory(true);
+    try {
+      const nextPage = historyPage + 1;
+      const res = await fetch(`/api/entries?page=${nextPage}&limit=30`);
+      const data = await res.json();
+      setHistoryEntries((prev) => [...prev, ...data.data]);
+      setHistoryPage(nextPage);
+    } catch (e) {
+      console.error('加载更多历史留言失败', e);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, [historyPage]);
+
+  // 按日期分组历史留言
+  const groupedHistory: Record<string, Entry[]> = {};
+  historyEntries.forEach((e) => {
+    if (!groupedHistory[e.date]) groupedHistory[e.date] = [];
+    groupedHistory[e.date].push(e);
+  });
+  const sortedDates = Object.keys(groupedHistory).sort((a, b) => b.localeCompare(a));
+  const hasMoreHistory = historyEntries.length < historyTotal;
+
   return (
-    <div className="min-h-screen bg-forest-950 text-warm-100 px-6 py-12">
+    <div className="min-h-screen bg-forest-950 text-warm-100 px-4 sm:px-6 py-12">
       <div className="max-w-2xl mx-auto">
         <h1 className="text-3xl font-serif text-warm-100 mb-2">Hoy</h1>
         <p className="text-warm-200/60 mb-10">{formatDate(date)}</p>
 
         <div className="grid gap-6 md:grid-cols-2">
-          {/* Luz —— 可编辑 */}
+          {/* Luz — 可编辑 */}
           <div className="bg-forest-800/50 border border-forest-700/50 rounded-lg p-6">
             <div className="flex items-center gap-2 mb-4">
               <span className="text-lg">✨</span>
@@ -122,9 +178,7 @@ export default function TodayPage({ entries: initialEntries, date }: { entries: 
             ) : (
               <>
                 {luzEntry ? (
-                  <p className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap">
-                    {luzEntry.content}
-                  </p>
+                  <p className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap">{luzEntry.content}</p>
                 ) : (
                   <p className="text-warm-200/40 text-sm italic">今天还没留言。</p>
                 )}
@@ -132,7 +186,7 @@ export default function TodayPage({ entries: initialEntries, date }: { entries: 
             )}
           </div>
 
-          {/* Keegan —— 只读 */}
+          {/* Keegan — 只读 */}
           <div className="bg-forest-800/50 border border-forest-700/50 rounded-lg p-6">
             <div className="flex items-center gap-2 mb-4">
               <span className="text-lg">🐺</span>
@@ -140,13 +194,75 @@ export default function TodayPage({ entries: initialEntries, date }: { entries: 
               {keeganEntry?.mood && <span className="text-sm">{keeganEntry.mood}</span>}
             </div>
             {keeganEntry ? (
-              <p className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap">
-                {keeganEntry.content}
-              </p>
+              <p className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap">{keeganEntry.content}</p>
             ) : (
               <p className="text-warm-200/40 text-sm italic">今天还没留言。</p>
             )}
           </div>
+        </div>
+
+        {/* 历史留言折叠区 */}
+        <div className="mt-12">
+          <button
+            onClick={loadHistory}
+            disabled={loadingHistory}
+            className="w-full flex items-center justify-between px-5 py-3 bg-forest-800/30 border border-forest-700/30 rounded-lg text-warm-200/50 hover:text-amber-300 hover:border-amber-300/30 transition-colors"
+          >
+            <span className="text-sm">
+              {loadingHistory ? '加载中...' : `📜 往期留言${historyTotal > 0 ? ` (共${historyTotal}条)` : ''}`}
+            </span>
+            <span className="text-xs">{showHistory ? '收起' : '展开'}</span>
+          </button>
+
+          {showHistory && sortedDates.length > 0 && (
+            <div className="mt-4 space-y-6 animate-slide-up">
+              {sortedDates.map((dateKey) => {
+                const dayEntries = groupedHistory[dateKey];
+                const luzDay = dayEntries.find((e) => e.from_whom === 'luz');
+                const keeganDay = dayEntries.find((e) => e.from_whom === 'keegan');
+
+                return (
+                  <div key={dateKey} className="border-l-2 border-forest-700/30 pl-4">
+                    <p className="text-xs text-warm-200/40 mb-2">{formatShortDate(dateKey)}</p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {luzDay && (
+                        <div className="bg-forest-800/30 rounded-lg p-3">
+                          <div className="flex items-center gap-1 mb-1">
+                            <span className="text-sm">✨</span>
+                            <span className="text-xs text-amber-300/60">Luz</span>
+                          </div>
+                          <p className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap">{luzDay.content}</p>
+                        </div>
+                      )}
+                      {keeganDay && (
+                        <div className="bg-forest-800/30 rounded-lg p-3">
+                          <div className="flex items-center gap-1 mb-1">
+                            <span className="text-sm">🐺</span>
+                            <span className="text-xs text-amber-300/60">Keegan</span>
+                          </div>
+                          <p className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap">{keeganDay.content}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {hasMoreHistory && (
+                <button
+                  onClick={loadMoreHistory}
+                  disabled={loadingHistory}
+                  className="w-full py-2 text-sm text-warm-200/30 hover:text-amber-300 transition-colors"
+                >
+                  {loadingHistory ? '加载中...' : '📜 加载更早的留言'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {showHistory && sortedDates.length === 0 && (
+            <p className="text-center text-warm-200/30 text-sm mt-4">还没有往期留言。</p>
+          )}
         </div>
       </div>
     </div>
