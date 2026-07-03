@@ -298,6 +298,7 @@ export const getServerSideProps: GetServerSideProps = async () => {
   const { data } = await supabase
     .from('memories')
     .select('*')
+    .neq('type', 'letter')
     .order('created_at', { ascending: false })
     .limit(50);
 
