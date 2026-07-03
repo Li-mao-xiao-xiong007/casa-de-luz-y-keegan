@@ -6,11 +6,11 @@ import { useState, useCallback } from 'react';
 function toBase64(str: string): string {
   return btoa(unescape(encodeURIComponent(str)));
 }
-function fromBase64(b64: string): string {
+function fromBase64(b64: string): string | null {
   try {
     return decodeURIComponent(escape(atob(b64)));
   } catch {
-    return '[解码失败，数据可能损坏]';
+    return null; // 调用方自己处理错误
   }
 }
 
@@ -27,6 +27,7 @@ type Letter = {
 const TABS = [
   { key: 'inbox', label: '📬 收信箱' },
   { key: 'compose', label: '✉️ 写信' },
+  { key: 'decode', label: '🔓 解码' },
 ];
 
 const API_KEY = process.env.NEXT_PUBLIC_API_WRITE_KEY || '';
@@ -38,8 +39,14 @@ export default function WhisperPage({ letters: initialLetters }: { letters: Lett
   const [saving, setSaving] = useState(false);
 
   // 写信表单
+  const [sender, setSender] = useState<'luz' | 'keegan'>('luz');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
+
+  // 解码器
+  const [decodeInput, setDecodeInput] = useState('');
+  const [decodeResult, setDecodeResult] = useState<string | null>(null);
+  const [decodeError, setDecodeError] = useState<string | null>(null);
 
   const formatDate = (iso: string) => {
     const d = new Date(iso);
@@ -52,6 +59,7 @@ export default function WhisperPage({ letters: initialLetters }: { letters: Lett
   // 获取解码后的预览（前20字）
   const preview = (content: string) => {
     const decoded = fromBase64(content);
+    if (!decoded) return '';
     return decoded.length > 20 ? decoded.slice(0, 20) + '…' : decoded;
   };
 
@@ -68,7 +76,7 @@ export default function WhisperPage({ letters: initialLetters }: { letters: Lett
           type: 'letter',
           layer: 'private',
           content: encoded,
-          source: 'luz',
+          source: sender,
           tags: ['whisper'],
           meta: subject.trim()
             ? { subject: subject.trim(), decoded_length: body.trim().length }
@@ -85,7 +93,7 @@ export default function WhisperPage({ letters: initialLetters }: { letters: Lett
     } finally {
       setSaving(false);
     }
-  }, [body, subject]);
+  }, [body, subject, sender]);
 
   // 删除一封信
   const handleDelete = useCallback(async (id: string) => {
@@ -102,6 +110,19 @@ export default function WhisperPage({ letters: initialLetters }: { letters: Lett
       alert('删除失败：' + e.message);
     }
   }, [expandedId]);
+
+  // 解码
+  const handleDecode = useCallback(() => {
+    if (!decodeInput.trim()) return;
+    setDecodeError(null);
+    const result = fromBase64(decodeInput.trim());
+    if (result === null) {
+      setDecodeResult(null);
+      setDecodeError('🔓 解码失败：这不是有效的 base64 密文，请检查内容是否有遗漏。');
+    } else {
+      setDecodeResult(result);
+    }
+  }, [decodeInput]);
 
   return (
     <div className="min-h-screen bg-forest-950 text-warm-100 px-4 sm:px-6 py-12">
@@ -139,7 +160,7 @@ export default function WhisperPage({ letters: initialLetters }: { letters: Lett
               <div className="space-y-3">
                 {letters.map((letter, i) => {
                   const isExpanded = expandedId === letter.id;
-                  const decoded = fromBase64(letter.content);
+                  const decoded = fromBase64(letter.content) || '[解码失败]';
                   const subj = letter.meta?.subject || '';
 
                   return (
@@ -217,6 +238,33 @@ export default function WhisperPage({ letters: initialLetters }: { letters: Lett
         {/* ── 写信 ── */}
         {activeTab === 'compose' && (
           <div className="bg-forest-800/50 border border-amber-300/20 rounded-lg p-6">
+            {/* 寄信人切换 */}
+            <div className="mb-4">
+              <label className="text-xs text-warm-200/50 mb-2 block">寄信人</label>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setSender('luz')}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm border transition-colors
+                    ${sender === 'luz'
+                      ? 'bg-amber-300/15 border-amber-300/50 text-amber-300'
+                      : 'border-forest-700 text-warm-200/60 hover:border-amber-300/30 hover:text-warm-200'
+                    }`}
+                >
+                  ✨ Luz
+                </button>
+                <button
+                  onClick={() => setSender('keegan')}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm border transition-colors
+                    ${sender === 'keegan'
+                      ? 'bg-amber-300/15 border-amber-300/50 text-amber-300'
+                      : 'border-forest-700 text-warm-200/60 hover:border-amber-300/30 hover:text-warm-200'
+                    }`}
+                >
+                  🐺 Keegan
+                </button>
+              </div>
+            </div>
+
             <div className="mb-4">
               <label className="text-xs text-warm-200/50 mb-1.5 block">主题（可选）</label>
               <input
@@ -250,6 +298,50 @@ export default function WhisperPage({ letters: initialLetters }: { letters: Lett
                 {saving ? '封缄中…' : '💌 封缄寄出'}
               </button>
             </div>
+          </div>
+        )}
+
+        {/* ── 解码 ── */}
+        {activeTab === 'decode' && (
+          <div className="bg-forest-800/50 border border-amber-300/20 rounded-lg p-6">
+            <p className="text-xs text-warm-200/50 mb-4">
+              粘贴一段 base64 密文，前端本地解码，不经过网络。
+            </p>
+            <textarea
+              value={decodeInput}
+              onChange={(e) => {
+                setDecodeInput(e.target.value);
+                setDecodeResult(null);
+                setDecodeError(null);
+              }}
+              placeholder="在此粘贴 base64 密文…"
+              className="w-full bg-forest-900 border border-forest-700 rounded-lg p-4 text-warm-100 text-sm placeholder-warm-200/30 resize-none focus:outline-none focus:border-amber-300/50 transition-colors min-h-[120px] font-mono"
+              autoFocus
+            />
+
+            <div className="flex justify-end mt-4">
+              <button
+                onClick={handleDecode}
+                disabled={!decodeInput.trim()}
+                className="px-6 py-2.5 bg-amber-300 text-forest-950 rounded-full text-sm font-medium hover:bg-amber-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                🔓 解信
+              </button>
+            </div>
+
+            {/* 解码结果 */}
+            {decodeError && (
+              <div className="mt-4 bg-red-900/30 border border-red-500/30 rounded-lg p-4">
+                <p className="text-red-300 text-sm">{decodeError}</p>
+              </div>
+            )}
+            {decodeResult !== null && (
+              <div className="mt-4 bg-forest-900/60 border border-amber-300/20 rounded-lg p-5">
+                <p className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap">
+                  {decodeResult}
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>
