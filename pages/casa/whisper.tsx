@@ -47,6 +47,9 @@ export default function WhisperPage({ letters: initialLetters }: { letters: Lett
   const [decodeInput, setDecodeInput] = useState('');
   const [decodeResult, setDecodeResult] = useState<string | null>(null);
   const [decodeError, setDecodeError] = useState<string | null>(null);
+  const [decodeSender, setDecodeSender] = useState<'luz' | 'keegan'>('luz');
+  const [decodeSaving, setDecodeSaving] = useState(false);
+  const [decodeSaved, setDecodeSaved] = useState(false);
 
   const formatDate = (iso: string) => {
     const d = new Date(iso);
@@ -110,6 +113,36 @@ export default function WhisperPage({ letters: initialLetters }: { letters: Lett
       alert('删除失败：' + e.message);
     }
   }, [expandedId]);
+
+  // 将解码内容保存到收信箱
+  const handleSaveDecoded = useCallback(async () => {
+    if (!decodeResult) return;
+    setDecodeSaving(true);
+    setDecodeSaved(false);
+    try {
+      const encoded = toBase64(decodeResult);
+      const res = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
+        body: JSON.stringify({
+          type: 'letter',
+          layer: 'private',
+          content: encoded,
+          source: decodeSender,
+          tags: ['whisper'],
+          meta: { decoded_length: decodeResult.length },
+        }),
+      });
+      if (!res.ok) throw new Error('保存失败');
+      const letter = await res.json();
+      setLetters((prev) => [letter, ...prev]);
+      setDecodeSaved(true);
+    } catch (e: any) {
+      alert('保存失败：' + e.message);
+    } finally {
+      setDecodeSaving(false);
+    }
+  }, [decodeResult, decodeSender]);
 
   // 解码
   const handleDecode = useCallback(() => {
@@ -340,6 +373,43 @@ export default function WhisperPage({ letters: initialLetters }: { letters: Lett
                 <p className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap">
                   {decodeResult}
                 </p>
+                {/* 保存到收信箱 */}
+                <div className="flex items-center justify-between mt-4 pt-4 border-t border-forest-700/30">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-warm-200/50">保存为</span>
+                    <button
+                      onClick={() => setDecodeSender('luz')}
+                      className={`px-2.5 py-1 text-xs rounded-full border transition-colors
+                        ${decodeSender === 'luz'
+                          ? 'bg-amber-300/15 border-amber-300/50 text-amber-300'
+                          : 'border-forest-700 text-warm-200/50 hover:border-amber-300/30'
+                        }`}
+                    >
+                      ✨ Luz
+                    </button>
+                    <button
+                      onClick={() => setDecodeSender('keegan')}
+                      className={`px-2.5 py-1 text-xs rounded-full border transition-colors
+                        ${decodeSender === 'keegan'
+                          ? 'bg-amber-300/15 border-amber-300/50 text-amber-300'
+                          : 'border-forest-700 text-warm-200/50 hover:border-amber-300/30'
+                        }`}
+                    >
+                      🐺 Keegan
+                    </button>
+                  </div>
+                  <button
+                    onClick={handleSaveDecoded}
+                    disabled={decodeSaving || decodeSaved}
+                    className={`px-4 py-1.5 rounded-full text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed
+                      ${decodeSaved
+                        ? 'bg-green-700/50 text-green-300 border border-green-500/30'
+                        : 'bg-amber-300 text-forest-950 hover:bg-amber-400'
+                      }`}
+                  >
+                    {decodeSaved ? '✓ 已保存' : decodeSaving ? '…' : '💾 保存'}
+                  </button>
+                </div>
               </div>
             )}
           </div>
