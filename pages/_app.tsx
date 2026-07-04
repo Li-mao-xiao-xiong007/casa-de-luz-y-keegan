@@ -8,6 +8,7 @@ const NAV = [
   { href: "/memories", label: "Memorias" },
   { href: "/today", label: "Hoy" },
   { href: "/pawprints", label: "🐾" },
+  { href: "/chat", label: "💬" },
   { href: "/casa/whisper", label: "💌" },
   { href: "/casa", label: "Casa" },
 ];
