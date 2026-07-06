@@ -43,20 +43,19 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
   const [messages, setMessages] = useState(initialMessages);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [aiThinking, setAiThinking] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(initialMessages.length >= 50);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // 自动滚到底部（仅发送新消息时）
   const scrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
   // 首次加载滚到底
   useEffect(() => {
-    // 等 DOM 渲染完再滚
     requestAnimationFrame(() => {
       bottomRef.current?.scrollIntoView();
     });
@@ -66,11 +65,6 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
   useEffect(() => {
     const poll = setInterval(async () => {
       try {
-        const lastId = messages[messages.length - 1]?.id;
-        const url = lastId
-          ? `/api/messages?before=${lastId}&limit=50`
-          : '/api/messages?limit=50';
-        // 反过来：直接拉最新的，取新消息追加
         const res = await fetch('/api/messages?limit=10');
         const data = await res.json();
         if (data.messages?.length > 0) {
@@ -79,7 +73,6 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
             const fresh = data.messages.filter((m: Message) => !existingIds.has(m.id));
             if (fresh.length === 0) return prev;
             const updated = [...prev, ...fresh];
-            // 有新消息时滚到底
             setTimeout(scrollToBottom, 100);
             return updated;
           });
@@ -92,27 +85,46 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
     return () => clearInterval(poll);
   }, [messages, scrollToBottom]);
 
-  // 发送消息（Luz）
+  // 发送消息 → 调用 /api/chat（自动触发 Keegan 回复）
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || sending) return;
 
     setSending(true);
+    setAiThinking(true);
     try {
-      const res = await fetch('/api/messages', {
+      const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
-        body: JSON.stringify({ from_whom: 'luz', content: text }),
+        body: JSON.stringify({ content: text }),
       });
-      if (!res.ok) throw new Error('发送失败');
-      const msg = await res.json();
-      setMessages((prev) => [...prev, msg]);
+      const data = await res.json();
+
+      if (data.user_message) {
+        setMessages((prev) => [...prev, data.user_message]);
+      }
+      if (data.ai_message) {
+        setMessages((prev) => [...prev, data.ai_message]);
+      } else if (data.error) {
+        // AI 没回复但有错误提示，显示给用户
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: 'error-' + Date.now(),
+            created_at: new Date().toISOString(),
+            from_whom: 'keegan',
+            content: `⚠️ ${data.error}`,
+          },
+        ]);
+      }
+
       setInput('');
       setTimeout(scrollToBottom, 50);
     } catch (e: any) {
       alert('发送失败：' + e.message);
     } finally {
       setSending(false);
+      setAiThinking(false);
     }
   }, [input, sending, scrollToBottom]);
 
@@ -223,6 +235,25 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
           );
         })}
 
+        {/* AI 正在思考 */}
+        {aiThinking && (
+          <div className="flex justify-start mb-2">
+            <div className="max-w-[75%] flex flex-col items-start">
+              <div className="flex items-center gap-1.5 mb-1">
+                <span className="text-sm">🐺</span>
+                <span className="text-xs text-warm-200/40">正在思考…</span>
+              </div>
+              <div className="px-4 py-2.5 rounded-2xl rounded-bl-md bg-forest-800/60 border border-forest-700/30">
+                <div className="flex gap-1.5">
+                  <span className="w-1.5 h-1.5 bg-amber-300/60 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 bg-amber-300/60 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 bg-amber-300/60 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* 滚动锚点 */}
         <div ref={bottomRef} />
       </div>
@@ -242,7 +273,7 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
             disabled={sending || !input.trim()}
             className="px-5 py-2.5 bg-amber-300 text-forest-950 rounded-full text-sm font-medium hover:bg-amber-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            发送
+            {sending ? '…' : '发送'}
           </button>
         </div>
       </div>

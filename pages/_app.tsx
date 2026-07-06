@@ -11,6 +11,7 @@ const NAV = [
   { href: "/chat", label: "💬" },
   { href: "/casa/whisper", label: "💌" },
   { href: "/casa", label: "Casa" },
+  { href: "/casa/settings", label: "⚙️" },
 ];
 
 export default function App({ Component, pageProps }: AppProps) {
