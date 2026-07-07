@@ -82,6 +82,7 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const streamingIdRef = useRef<string | null>(null);
+  const stoppedAtRef = useRef<number | null>(null);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     requestAnimationFrame(() => {
@@ -124,7 +125,25 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
         if (data.messages?.length > 0) {
           setMessages((prev) => {
             const existingIds = new Set(prev.map((m) => m.id));
-            const fresh = data.messages.filter((m: Message) => !existingIds.has(m.id));
+            const optimisticContents = new Set(
+              prev
+                .filter((m) => m.id.startsWith('user-'))
+                .map((m) => m.content),
+            );
+            const stoppedAt = stoppedAtRef.current;
+            const fresh = data.messages.filter((m: Message) => {
+              if (existingIds.has(m.id)) return false;
+              if (m.from_whom === 'luz' && optimisticContents.has(m.content)) return false;
+              if (
+                stoppedAt &&
+                m.from_whom === 'keegan' &&
+                new Date(m.created_at).getTime() >= stoppedAt &&
+                Date.now() - stoppedAt < 120000
+              ) {
+                return false;
+              }
+              return true;
+            });
             if (fresh.length === 0) return prev;
             setTimeout(() => scrollToBottom('smooth'), 100);
             return [...prev, ...fresh];
@@ -158,21 +177,38 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
 
     const controller = new AbortController();
     abortRef.current = controller;
+    stoppedAtRef.current = null;
     setGenerating(true);
 
-    const tempId = `stream-${Date.now()}`;
+    const now = Date.now();
+    const shouldSaveUser = options?.saveUser !== false;
+    const tempUserId = shouldSaveUser ? `user-${now}` : null;
+    const tempId = `stream-${now}`;
     streamingIdRef.current = tempId;
 
-    setMessages((prev) => [
-      ...prev.filter((m) => m.local_status !== 'error'),
-      {
-        id: tempId,
-        created_at: new Date().toISOString(),
-        from_whom: 'keegan',
-        content: '',
-        local_status: 'streaming',
-      },
-    ]);
+    setMessages((prev) => {
+      const base = prev.filter((m) => m.local_status !== 'error');
+      const optimisticUser: Message[] = tempUserId
+        ? [{
+          id: tempUserId,
+          created_at: new Date().toISOString(),
+          from_whom: 'luz',
+          content: text,
+        }]
+        : [];
+
+      return [
+        ...base,
+        ...optimisticUser,
+        {
+          id: tempId,
+          created_at: new Date().toISOString(),
+          from_whom: 'keegan',
+          content: '',
+          local_status: 'streaming',
+        },
+      ];
+    });
     setTimeout(() => scrollToBottom('smooth'), 50);
 
     try {
@@ -204,7 +240,13 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
           if (!parsed) continue;
 
           if (parsed.event === 'user_message') {
-            setMessages((prev) => upsertMessage(prev, parsed.data as Message));
+            const userMessage = parsed.data as Message;
+            setMessages((prev) => {
+              if (tempUserId) {
+                return prev.map((m) => (m.id === tempUserId ? userMessage : m));
+              }
+              return upsertMessage(prev, userMessage);
+            });
           }
 
           if (parsed.event === 'delta') {
@@ -252,6 +294,7 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
   }, [generating, input, runChat]);
 
   const handleStop = useCallback(() => {
+    stoppedAtRef.current = Date.now();
     abortRef.current?.abort();
   }, []);
 
