@@ -7,11 +7,14 @@ type Message = {
   created_at: string;
   from_whom: 'keegan' | 'luz';
   content: string;
+  edited_at?: string | null;
+  local_status?: 'streaming' | 'error';
+  error_text?: string;
+  retry_content?: string;
 };
 
 const API_KEY = process.env.NEXT_PUBLIC_API_WRITE_KEY || '';
 
-// ── 日期格式工具 ──
 function isSameDay(a: string, b: string) {
   const da = new Date(a);
   const db = new Date(b);
@@ -39,31 +42,82 @@ function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 }
 
+function upsertMessage(list: Message[], message: Message) {
+  const index = list.findIndex((m) => m.id === message.id);
+  if (index === -1) return [...list, message];
+  const copy = [...list];
+  copy[index] = { ...copy[index], ...message };
+  return copy;
+}
+
+function parseStreamEvent(raw: string) {
+  let event = 'message';
+  let data = '';
+
+  raw.split('\n').forEach((line) => {
+    if (line.startsWith('event:')) event = line.slice(6).trim();
+    if (line.startsWith('data:')) data += line.slice(5).trim();
+  });
+
+  if (!data) return null;
+
+  try {
+    return { event, data: JSON.parse(data) };
+  } catch {
+    return null;
+  }
+}
+
 export default function ChatPage({ messages: initialMessages }: { messages: Message[] }) {
-  const [messages, setMessages] = useState(initialMessages);
+  const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState('');
-  const [sending, setSending] = useState(false);
-  const [aiThinking, setAiThinking] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(initialMessages.length >= 50);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const streamingIdRef = useRef<string | null>(null);
 
-  const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
-
-  // 首次加载滚到底
-  useEffect(() => {
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView();
+      bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
     });
   }, []);
 
-  // 30 秒轮询拉新消息
+  const settleKeyboardAndScroll = useCallback(() => {
+    scrollToBottom('smooth');
+    window.setTimeout(() => scrollToBottom('smooth'), 120);
+    window.setTimeout(() => scrollToBottom('smooth'), 320);
+  }, [scrollToBottom]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ block: 'end' });
+    });
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => settleKeyboardAndScroll();
+    const visualViewport = window.visualViewport;
+    visualViewport?.addEventListener('resize', onResize);
+    visualViewport?.addEventListener('scroll', onResize);
+    window.addEventListener('resize', onResize);
+
+    return () => {
+      visualViewport?.removeEventListener('resize', onResize);
+      visualViewport?.removeEventListener('scroll', onResize);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [settleKeyboardAndScroll]);
+
   useEffect(() => {
     const poll = setInterval(async () => {
+      if (generating) return;
       try {
         const res = await fetch('/api/messages?limit=10');
         const data = await res.json();
@@ -72,63 +126,223 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
             const existingIds = new Set(prev.map((m) => m.id));
             const fresh = data.messages.filter((m: Message) => !existingIds.has(m.id));
             if (fresh.length === 0) return prev;
-            const updated = [...prev, ...fresh];
-            setTimeout(scrollToBottom, 100);
-            return updated;
+            setTimeout(() => scrollToBottom('smooth'), 100);
+            return [...prev, ...fresh];
           });
         }
-      } catch (e) {
+      } catch {
         // 轮询失败静默忽略
       }
     }, 30000);
 
     return () => clearInterval(poll);
-  }, [messages, scrollToBottom]);
+  }, [generating, scrollToBottom]);
 
-  // 发送消息 → 调用 /api/chat（自动触发 Keegan 回复）
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text || sending) return;
+  const appendError = useCallback((error: string, retryContent: string) => {
+    const errorMessage: Message = {
+      id: `error-${Date.now()}`,
+      created_at: new Date().toISOString(),
+      from_whom: 'keegan',
+      content: error,
+      local_status: 'error',
+      error_text: error,
+      retry_content: retryContent,
+    };
+    setMessages((prev) => [...prev.filter((m) => m.local_status !== 'streaming'), errorMessage]);
+    setTimeout(() => scrollToBottom('smooth'), 50);
+  }, [scrollToBottom]);
 
-    setSending(true);
-    setAiThinking(true);
+  const runChat = useCallback(async (content: string, options?: { saveUser?: boolean }) => {
+    const text = content.trim();
+    if (!text || generating) return;
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setGenerating(true);
+
+    const tempId = `stream-${Date.now()}`;
+    streamingIdRef.current = tempId;
+
+    setMessages((prev) => [
+      ...prev.filter((m) => m.local_status !== 'error'),
+      {
+        id: tempId,
+        created_at: new Date().toISOString(),
+        from_whom: 'keegan',
+        content: '',
+        local_status: 'streaming',
+      },
+    ]);
+    setTimeout(() => scrollToBottom('smooth'), 50);
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
+        signal: controller.signal,
         headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
-        body: JSON.stringify({ content: text }),
+        body: JSON.stringify({ content: text, save_user: options?.saveUser !== false }),
       });
-      const data = await res.json();
 
-      if (data.user_message) {
-        setMessages((prev) => [...prev, data.user_message]);
-      }
-      if (data.ai_message) {
-        setMessages((prev) => [...prev, data.ai_message]);
-      } else if (data.error) {
-        // AI 没回复但有错误提示，显示给用户
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: 'error-' + Date.now(),
-            created_at: new Date().toISOString(),
-            from_whom: 'keegan',
-            content: `⚠️ ${data.error}`,
-          },
-        ]);
+      if (!res.ok || !res.body) {
+        throw new Error(`请求失败 (${res.status})`);
       }
 
-      setInput('');
-      setTimeout(scrollToBottom, 50);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split('\n\n');
+        buffer = chunks.pop() || '';
+
+        for (const chunk of chunks) {
+          const parsed = parseStreamEvent(chunk);
+          if (!parsed) continue;
+
+          if (parsed.event === 'user_message') {
+            setMessages((prev) => upsertMessage(prev, parsed.data as Message));
+          }
+
+          if (parsed.event === 'delta') {
+            const delta = parsed.data.content || '';
+            setMessages((prev) => prev.map((m) => (
+              m.id === tempId ? { ...m, content: `${m.content}${delta}` } : m
+            )));
+            setTimeout(() => scrollToBottom('smooth'), 10);
+          }
+
+          if (parsed.event === 'done') {
+            setMessages((prev) => {
+              const withoutTemp = prev.filter((m) => m.id !== tempId);
+              const withUser = parsed.data.user_message
+                ? upsertMessage(withoutTemp, parsed.data.user_message as Message)
+                : withoutTemp;
+              return upsertMessage(withUser, parsed.data.ai_message as Message);
+            });
+          }
+
+          if (parsed.event === 'error') {
+            appendError(parsed.data.error || 'AI 回复失败，可以重试。', text);
+          }
+        }
+      }
     } catch (e: any) {
-      alert('发送失败：' + e.message);
+      if (e.name === 'AbortError') {
+        setMessages((prev) => prev.filter((m) => m.id !== tempId));
+        return;
+      }
+      appendError(e.message || 'AI 回复失败，可以重试。', text);
     } finally {
-      setSending(false);
-      setAiThinking(false);
+      setGenerating(false);
+      abortRef.current = null;
+      streamingIdRef.current = null;
+      setTimeout(() => scrollToBottom('smooth'), 80);
     }
-  }, [input, sending, scrollToBottom]);
+  }, [appendError, generating, scrollToBottom]);
 
-  // 加载更早的消息
+  const handleSend = useCallback(async () => {
+    const text = input.trim();
+    if (!text || generating) return;
+    setInput('');
+    await runChat(text, { saveUser: true });
+  }, [generating, input, runChat]);
+
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  const handleRetry = useCallback((content: string) => {
+    runChat(content, { saveUser: false });
+  }, [runChat]);
+
+  const deleteMessage = useCallback(async (id: string) => {
+    if (id.startsWith('error-') || id.startsWith('stream-')) return true;
+
+    const res = await fetch(`/api/messages/${id}`, {
+      method: 'DELETE',
+      headers: { 'x-api-key': API_KEY },
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      appendError(data.error || '删除旧回复失败。', '');
+      return false;
+    }
+
+    return true;
+  }, [appendError]);
+
+  const findPreviousLuzMessage = useCallback((index: number) => {
+    for (let i = index - 1; i >= 0; i -= 1) {
+      if (messages[i]?.from_whom === 'luz') return messages[i];
+    }
+    return null;
+  }, [messages]);
+
+  const handleRegenerate = useCallback(async (index: number) => {
+    const prompt = findPreviousLuzMessage(index);
+    const target = messages[index];
+    if (!prompt || !target || generating) return;
+
+    const deleted = await deleteMessage(target.id);
+    if (!deleted) return;
+
+    setMessages((prev) => prev.filter((m) => m.id !== target.id));
+    runChat(prompt.content, { saveUser: false });
+  }, [deleteMessage, findPreviousLuzMessage, generating, messages, runChat]);
+
+  const startEdit = useCallback((message: Message) => {
+    if (generating || message.from_whom !== 'luz') return;
+    setEditingId(message.id);
+    setEditingText(message.content);
+  }, [generating]);
+
+  const cancelEdit = useCallback(() => {
+    setEditingId(null);
+    setEditingText('');
+  }, []);
+
+  const saveEdit = useCallback(async () => {
+    if (!editingId || !editingText.trim()) return;
+    const originalIndex = messages.findIndex((m) => m.id === editingId);
+    const original = messages[originalIndex];
+    if (!original) return;
+    const nextReply = messages[originalIndex + 1]?.from_whom === 'keegan'
+      ? messages[originalIndex + 1]
+      : null;
+
+    const res = await fetch(`/api/messages/${editingId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
+      body: JSON.stringify({ content: editingText }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      appendError(data.error || '消息编辑失败。', original.content);
+      return;
+    }
+
+    const updated = await res.json();
+
+    if (nextReply) {
+      const deleted = await deleteMessage(nextReply.id);
+      if (!deleted) return;
+    }
+
+    setMessages((prev) => {
+      const withoutOldReply = nextReply ? prev.filter((m) => m.id !== nextReply.id) : prev;
+      return upsertMessage(withoutOldReply, updated);
+    });
+    setEditingId(null);
+    setEditingText('');
+    await runChat(updated.content, { saveUser: false });
+  }, [appendError, deleteMessage, editingId, editingText, messages, runChat]);
+
   const handleLoadMore = useCallback(async () => {
     if (loadingMore || !hasMore || messages.length === 0) return;
     setLoadingMore(true);
@@ -147,7 +361,6 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
     }
   }, [loadingMore, hasMore, messages]);
 
-  // 键盘：Enter 发送
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -158,20 +371,20 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
     [handleSend],
   );
 
+  const inputBottomPadding = 'calc(88px + env(safe-area-inset-bottom))';
+
   return (
-    <div className="min-h-screen bg-forest-950 text-warm-100 flex flex-col">
-      {/* 顶部标题栏 */}
+    <div className="min-h-[100dvh] bg-forest-950 text-warm-100 flex flex-col overflow-hidden">
       <div className="sticky top-0 z-20 bg-forest-950/95 backdrop-blur border-b border-forest-700/30 px-4 py-3">
         <h1 className="text-lg font-serif text-warm-100">💬 Chat</h1>
         <p className="text-xs text-warm-200/40">只有你和我知道的对话</p>
       </div>
 
-      {/* 消息列表 */}
       <div
         ref={listRef}
         className="flex-1 overflow-y-auto px-4 py-4 max-w-2xl mx-auto w-full"
+        style={{ paddingBottom: inputBottomPadding }}
       >
-        {/* 加载更多 */}
         {hasMore && (
           <div className="text-center mb-4">
             <button
@@ -184,7 +397,6 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
           </div>
         )}
 
-        {/* 空状态 */}
         {messages.length === 0 && (
           <div className="text-center py-20">
             <p className="text-4xl mb-4">💬</p>
@@ -192,15 +404,15 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
           </div>
         )}
 
-        {/* 消息气泡 */}
         {messages.map((msg, i) => {
           const isLuz = msg.from_whom === 'luz';
           const prev = i > 0 ? messages[i - 1] : null;
           const showDateSep = !prev || !isSameDay(prev.created_at, msg.created_at);
+          const isEditing = editingId === msg.id;
+          const canRegenerate = !isLuz && !msg.local_status && !!findPreviousLuzMessage(i);
 
           return (
             <div key={msg.id}>
-              {/* 日期分隔符 */}
               {showDateSep && (
                 <div className="flex items-center gap-3 my-6">
                   <div className="flex-1 h-px bg-forest-700/30" />
@@ -211,70 +423,103 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
                 </div>
               )}
 
-              {/* 气泡行 */}
-              <div className={`flex mb-2 ${isLuz ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[75%] ${isLuz ? 'items-end' : 'items-start'} flex flex-col`}>
-                  {/* 头像 + 时间 */}
+              <div className={`flex mb-3 ${isLuz ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[82%] ${isLuz ? 'items-end' : 'items-start'} flex flex-col`}>
                   <div className={`flex items-center gap-1.5 mb-1 ${isLuz ? 'flex-row-reverse' : 'flex-row'}`}>
                     <span className="text-sm">{isLuz ? '✨' : '🐺'}</span>
-                    <span className="text-xs text-warm-200/40">{formatTime(msg.created_at)}</span>
+                    <span className="text-xs text-warm-200/40">
+                      {formatTime(msg.created_at)}{msg.edited_at ? ' · 已编辑' : ''}
+                    </span>
                   </div>
-                  {/* 气泡 */}
+
                   <div
                     className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap
                       ${isLuz
                         ? 'bg-amber-300/15 border border-amber-300/20 rounded-br-md'
-                        : 'bg-forest-800/60 border border-forest-700/30 rounded-bl-md'
+                        : msg.local_status === 'error'
+                          ? 'bg-red-900/30 border border-red-400/30 rounded-bl-md text-red-100'
+                          : 'bg-forest-800/60 border border-forest-700/30 rounded-bl-md'
                       }`}
                   >
-                    {msg.content}
+                    {isEditing ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={editingText}
+                          onChange={(e) => setEditingText(e.target.value)}
+                          className="w-full min-h-[86px] bg-forest-950/60 border border-amber-300/20 rounded-xl px-3 py-2 text-sm text-warm-100 placeholder-warm-200/30 focus:outline-none focus:border-amber-300/50"
+                          autoFocus
+                        />
+                        <div className="flex justify-end gap-2">
+                          <button onClick={cancelEdit} className="text-xs text-warm-200/50 hover:text-warm-100">取消</button>
+                          <button onClick={saveEdit} className="text-xs text-amber-300 hover:text-amber-200">保存并重答</button>
+                        </div>
+                      </div>
+                    ) : msg.local_status === 'streaming' && !msg.content ? (
+                      <div className="flex gap-1.5 py-1.5">
+                        <span className="w-1.5 h-1.5 bg-amber-300/60 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-1.5 h-1.5 bg-amber-300/60 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-1.5 h-1.5 bg-amber-300/60 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </div>
+                    ) : (
+                      msg.content
+                    )}
                   </div>
+
+                  {!isEditing && (
+                    <div className={`mt-1.5 flex gap-3 text-[11px] text-warm-200/35 ${isLuz ? 'justify-end' : 'justify-start'}`}>
+                      {isLuz && !msg.local_status && (
+                        <button onClick={() => startEdit(msg)} disabled={generating} className="hover:text-amber-300 disabled:opacity-30">
+                          编辑
+                        </button>
+                      )}
+                      {canRegenerate && (
+                        <button onClick={() => handleRegenerate(i)} disabled={generating} className="hover:text-amber-300 disabled:opacity-30">
+                          重新生成
+                        </button>
+                      )}
+                      {msg.local_status === 'error' && msg.retry_content && (
+                        <button onClick={() => handleRetry(msg.retry_content || '')} disabled={generating} className="hover:text-amber-300 disabled:opacity-30">
+                          重试
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           );
         })}
 
-        {/* AI 正在思考 */}
-        {aiThinking && (
-          <div className="flex justify-start mb-2">
-            <div className="max-w-[75%] flex flex-col items-start">
-              <div className="flex items-center gap-1.5 mb-1">
-                <span className="text-sm">🐺</span>
-                <span className="text-xs text-warm-200/40">正在思考…</span>
-              </div>
-              <div className="px-4 py-2.5 rounded-2xl rounded-bl-md bg-forest-800/60 border border-forest-700/30">
-                <div className="flex gap-1.5">
-                  <span className="w-1.5 h-1.5 bg-amber-300/60 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 bg-amber-300/60 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 bg-amber-300/60 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 滚动锚点 */}
         <div ref={bottomRef} />
       </div>
 
-      {/* 输入框 */}
-      <div className="sticky bottom-0 z-20 bg-forest-950/95 backdrop-blur border-t border-forest-700/30 px-4 py-3">
+      <div className="fixed bottom-0 left-0 right-0 z-20 bg-forest-950/95 backdrop-blur border-t border-forest-700/30 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
         <div className="max-w-2xl mx-auto flex gap-2">
           <input
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onFocus={settleKeyboardAndScroll}
             placeholder="在这里写消息…"
-            className="flex-1 bg-forest-900 border border-forest-700 rounded-full px-4 py-2.5 text-sm text-warm-100 placeholder-warm-200/30 focus:outline-none focus:border-amber-300/50 transition-colors"
+            className="flex-1 min-w-0 bg-forest-900 border border-forest-700 rounded-full px-4 py-2.5 text-sm text-warm-100 placeholder-warm-200/30 focus:outline-none focus:border-amber-300/50 transition-colors"
           />
-          <button
-            onClick={handleSend}
-            disabled={sending || !input.trim()}
-            className="px-5 py-2.5 bg-amber-300 text-forest-950 rounded-full text-sm font-medium hover:bg-amber-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {sending ? '…' : '发送'}
-          </button>
+          {generating ? (
+            <button
+              onClick={handleStop}
+              className="px-4 py-2.5 bg-forest-800 border border-forest-700 text-warm-100 rounded-full text-sm hover:border-amber-300/40 transition-colors"
+            >
+              停止
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              disabled={!input.trim()}
+              className="px-5 py-2.5 bg-amber-300 text-forest-950 rounded-full text-sm font-medium hover:bg-amber-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              发送
+            </button>
+          )}
         </div>
       </div>
     </div>
