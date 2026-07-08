@@ -54,6 +54,20 @@ BEGIN
   END IF;
 END $$;
 
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'conversations'
+      AND policyname = 'allow_service_delete_conversations'
+  ) THEN
+    CREATE POLICY "allow_service_delete_conversations"
+      ON conversations FOR DELETE TO service_role
+      USING (true);
+  END IF;
+END $$;
+
 INSERT INTO conversations (id, title, created_at, updated_at)
 VALUES (
   '00000000-0000-0000-0000-000000000001',

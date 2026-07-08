@@ -99,6 +99,7 @@ export default function ChatPage({
   const [generating, setGenerating] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
+  const [showConversations, setShowConversations] = useState(false);
   const [hasMore, setHasMore] = useState(initialMessages.length >= 50);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
@@ -483,6 +484,7 @@ export default function ChatPage({
   const switchConversation = useCallback(async (conversationId: string) => {
     if (conversationId === activeConversationId || generating) return;
     setActiveConversationId(conversationId);
+    setShowConversations(false);
     await loadMessages(conversationId);
   }, [activeConversationId, generating, loadMessages]);
 
@@ -503,7 +505,39 @@ export default function ChatPage({
     setMessages([]);
     setHasMore(false);
     setInput('');
+    setShowConversations(false);
   }, [appendError, generating]);
+
+  const deleteConversation = useCallback(async (conversation: Conversation) => {
+    if (generating || conversations.length <= 1) return;
+    const ok = window.confirm(`确定删除「${conversation.title}」吗？这段对话里的消息也会一起删除。`);
+    if (!ok) return;
+
+    const res = await fetch(`/api/conversations/${conversation.id}`, {
+      method: 'DELETE',
+      headers: { 'x-api-key': API_KEY },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      appendError(data.error || '删除对话失败。', '');
+      return;
+    }
+
+    const remaining = conversations.filter((item) => item.id !== conversation.id);
+    setConversations(remaining);
+
+    if (conversation.id === activeConversationId) {
+      const next = remaining[0];
+      if (next) {
+        setActiveConversationId(next.id);
+        await loadMessages(next.id);
+      } else {
+        setMessages([]);
+        setHasMore(false);
+      }
+    }
+    setShowConversations(false);
+  }, [activeConversationId, appendError, conversations, generating, loadMessages]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -520,36 +554,9 @@ export default function ChatPage({
   return (
     <div className="min-h-[100dvh] bg-forest-950 text-warm-100 flex flex-col overflow-hidden">
       <div className="sticky top-0 z-20 bg-forest-950/95 backdrop-blur border-b border-forest-700/30 px-4 py-3">
-        <div className="max-w-3xl mx-auto flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="text-lg font-serif text-warm-100">💬 Chat</h1>
-            <p className="text-xs text-warm-200/40 truncate">{conversationTitle(activeConversation)}</p>
-          </div>
-          <button
-            onClick={createConversation}
-            disabled={generating}
-            className="shrink-0 px-3 py-1.5 rounded-full border border-amber-300/25 text-xs text-amber-300 hover:bg-amber-300/10 disabled:opacity-40"
-          >
-            新对话
-          </button>
-        </div>
-      </div>
-
-      <div className="border-b border-forest-700/20 bg-forest-950/90 px-4 py-2 overflow-x-auto">
-        <div className="max-w-3xl mx-auto flex gap-2">
-          {conversations.map((conversation) => (
-            <button
-              key={conversation.id}
-              onClick={() => switchConversation(conversation.id)}
-              disabled={generating || loadingConversation}
-              className={`shrink-0 max-w-[180px] truncate rounded-full px-3 py-1.5 text-xs border transition-colors disabled:opacity-40 ${conversation.id === activeConversationId
-                ? 'bg-amber-300/15 border-amber-300/30 text-amber-200'
-                : 'border-forest-700/40 text-warm-200/45 hover:text-warm-100 hover:border-forest-600'
-              }`}
-            >
-              {conversation.title}
-            </button>
-          ))}
+        <div className="max-w-3xl mx-auto min-w-0">
+          <h1 className="text-lg font-serif text-warm-100">💬 Chat</h1>
+          <p className="text-xs text-warm-200/40 truncate">{conversationTitle(activeConversation)}</p>
         </div>
       </div>
 
@@ -670,8 +677,64 @@ export default function ChatPage({
         <div ref={bottomRef} />
       </div>
 
+      {showConversations && (
+        <div className="fixed inset-0 z-30 bg-forest-950/20" onClick={() => setShowConversations(false)}>
+          <div
+            className="absolute inset-x-4 bottom-[calc(76px+env(safe-area-inset-bottom))] max-w-2xl mx-auto rounded-2xl border border-forest-700/50 bg-forest-950/98 shadow-2xl shadow-forest-950/60 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-forest-700/30">
+              <div>
+                <p className="text-sm text-warm-100">对话管理</p>
+                <p className="text-xs text-warm-200/35">新建、切换或删除一段对话</p>
+              </div>
+              <button
+                onClick={createConversation}
+                disabled={generating}
+                className="shrink-0 px-3 py-1.5 rounded-full bg-amber-300 text-forest-950 text-xs font-medium disabled:opacity-40"
+              >
+                新对话
+              </button>
+            </div>
+            <div className="max-h-[42vh] overflow-y-auto p-2 space-y-1">
+              {conversations.map((conversation) => (
+                <div
+                  key={conversation.id}
+                  className={`flex items-center gap-2 rounded-xl border px-2 py-2 ${conversation.id === activeConversationId
+                    ? 'border-amber-300/30 bg-amber-300/10'
+                    : 'border-transparent hover:bg-forest-900/70'
+                  }`}
+                >
+                  <button
+                    onClick={() => switchConversation(conversation.id)}
+                    disabled={generating || loadingConversation}
+                    className="min-w-0 flex-1 text-left disabled:opacity-40"
+                  >
+                    <p className="truncate text-sm text-warm-100">{conversation.title}</p>
+                    <p className="text-[11px] text-warm-200/35">{new Date(conversation.updated_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                  </button>
+                  <button
+                    onClick={() => deleteConversation(conversation)}
+                    disabled={generating || conversations.length <= 1}
+                    className="shrink-0 px-2 py-1 rounded-lg text-[11px] text-warm-200/35 hover:text-red-200 hover:bg-red-900/20 disabled:opacity-25"
+                  >
+                    删除
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="fixed bottom-0 left-0 right-0 z-20 bg-forest-950/95 backdrop-blur border-t border-forest-700/30 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
         <div className="max-w-2xl mx-auto flex gap-2">
+          <button
+            onClick={() => setShowConversations((value) => !value)}
+            className="shrink-0 px-3 py-2.5 bg-forest-900 border border-forest-700 text-warm-100 rounded-full text-sm hover:border-amber-300/40 transition-colors"
+          >
+            对话
+          </button>
           <input
             ref={inputRef}
             value={input}
