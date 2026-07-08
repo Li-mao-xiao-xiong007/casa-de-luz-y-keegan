@@ -5,6 +5,8 @@ import { authWrite } from '@/lib/auth';
 type ChatRole = 'system' | 'user' | 'assistant';
 type DeepSeekMessage = { role: ChatRole; content: string };
 
+const DEFAULT_CONVERSATION_ID = '00000000-0000-0000-0000-000000000001';
+
 async function getSettings() {
   if (!supabaseAdmin) return null;
   const { data } = await supabaseAdmin
@@ -25,6 +27,25 @@ function toDeepSeekRole(fromWhom: string): 'user' | 'assistant' {
   return fromWhom === 'luz' ? 'user' : 'assistant';
 }
 
+async function updateGeneration(id: string | null, status: 'completed' | 'cancelled' | 'failed') {
+  if (!supabaseAdmin || !id) return;
+  await supabaseAdmin
+    .from('chat_generations')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('status', 'running');
+}
+
+async function isGenerationCancelled(id: string | null) {
+  if (!supabaseAdmin || !id) return false;
+  const { data } = await supabaseAdmin
+    .from('chat_generations')
+    .select('status')
+    .eq('id', id)
+    .single();
+  return data?.status === 'cancelled';
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!supabaseAdmin) {
     return res.status(503).json({ error: 'database not configured' });
@@ -36,13 +57,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (!authWrite(req, res)) return;
 
-  const { content, save_user = true } = req.body;
+  const { content, save_user = true, conversation_id } = req.body;
   if (!content || typeof content !== 'string' || !content.trim()) {
     return res.status(400).json({ error: 'missing required field: content' });
   }
 
   const text = content.trim();
   const shouldSaveUser = save_user !== false;
+  const conversationId = typeof conversation_id === 'string' && conversation_id
+    ? conversation_id
+    : DEFAULT_CONVERSATION_ID;
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -57,16 +81,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   });
 
   let userMsg = null;
+  let generationId: string | null = null;
 
   try {
+    const { data: generation, error: generationError } = await supabaseAdmin
+      .from('chat_generations')
+      .insert({ conversation_id: conversationId })
+      .select('id, conversation_id, status, created_at')
+      .single();
+
+    if (generationError) {
+      sendEvent(res, 'error', { error: generationError.message });
+      responseFinished = true;
+      return res.end();
+    }
+
+    generationId = generation.id;
+    sendEvent(res, 'generation', generation);
+
     if (shouldSaveUser) {
       const { data, error } = await supabaseAdmin
         .from('messages')
-        .insert({ from_whom: 'luz', content: text })
+        .insert({ from_whom: 'luz', content: text, conversation_id: conversationId })
         .select()
         .single();
 
       if (error) {
+        await updateGeneration(generationId, 'failed');
         sendEvent(res, 'error', { error: error.message });
         responseFinished = true;
         return res.end();
@@ -83,6 +124,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const contextCount = parseInt(settings?.context_messages || '10');
 
     if (!apiKey) {
+      await updateGeneration(generationId, 'failed');
       sendEvent(res, 'error', { error: '未配置 DeepSeek API Key，请在设置页面填写', user_message: userMsg });
       responseFinished = true;
       return res.end();
@@ -91,6 +133,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { data: history } = await supabaseAdmin
       .from('messages')
       .select('from_whom, content')
+      .eq('conversation_id', conversationId)
       .order('created_at', { ascending: false })
       .limit(Math.max(contextCount, 1));
 
@@ -126,6 +169,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (!aiRes.ok || !aiRes.body) {
       const errBody = await aiRes.text();
+      await updateGeneration(generationId, 'failed');
       sendEvent(res, 'error', { error: `DeepSeek API 错误 (${aiRes.status}): ${errBody}`, user_message: userMsg });
       responseFinished = true;
       return res.end();
@@ -139,6 +183,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+
+      if (await isGenerationCancelled(generationId)) {
+        abortController.abort();
+        await updateGeneration(generationId, 'cancelled');
+        sendEvent(res, 'aborted', { ok: true, generation_id: generationId });
+        responseFinished = true;
+        return res.end();
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -164,8 +216,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
+    if (await isGenerationCancelled(generationId)) {
+      await updateGeneration(generationId, 'cancelled');
+      sendEvent(res, 'aborted', { ok: true, generation_id: generationId });
+      responseFinished = true;
+      return res.end();
+    }
+
     const finalContent = aiContent.trim();
     if (!finalContent) {
+      await updateGeneration(generationId, 'failed');
       sendEvent(res, 'error', { error: 'DeepSeek 返回了空回复', user_message: userMsg });
       responseFinished = true;
       return res.end();
@@ -173,26 +233,35 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const { data: aiMsg, error: aiErr } = await supabaseAdmin
       .from('messages')
-      .insert({ from_whom: 'keegan', content: finalContent })
+      .insert({ from_whom: 'keegan', content: finalContent, conversation_id: conversationId })
       .select()
       .single();
 
     if (aiErr) {
+      await updateGeneration(generationId, 'failed');
       sendEvent(res, 'error', { error: aiErr.message, user_message: userMsg });
       responseFinished = true;
       return res.end();
     }
 
-    sendEvent(res, 'done', { user_message: userMsg, ai_message: aiMsg });
+    await supabaseAdmin
+      .from('conversations')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', conversationId);
+    await updateGeneration(generationId, 'completed');
+
+    sendEvent(res, 'done', { user_message: userMsg, ai_message: aiMsg, generation_id: generationId });
     responseFinished = true;
     return res.end();
   } catch (e: any) {
     if (abortController.signal.aborted) {
-      sendEvent(res, 'aborted', { ok: true });
+      await updateGeneration(generationId, 'cancelled');
+      sendEvent(res, 'aborted', { ok: true, generation_id: generationId });
       responseFinished = true;
       return res.end();
     }
 
+    await updateGeneration(generationId, 'failed');
     sendEvent(res, 'error', {
       error: `调用 DeepSeek 失败: ${e.message}`,
       user_message: userMsg,

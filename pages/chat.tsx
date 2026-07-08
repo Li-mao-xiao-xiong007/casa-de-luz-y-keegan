@@ -7,13 +7,28 @@ type Message = {
   created_at: string;
   from_whom: 'keegan' | 'luz';
   content: string;
+  conversation_id?: string | null;
   edited_at?: string | null;
   local_status?: 'streaming' | 'error';
   error_text?: string;
   retry_content?: string;
 };
 
+type Conversation = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type ChatPageProps = {
+  messages: Message[];
+  conversations: Conversation[];
+  activeConversationId: string;
+};
+
 const API_KEY = process.env.NEXT_PUBLIC_API_WRITE_KEY || '';
+const DEFAULT_CONVERSATION_ID = '00000000-0000-0000-0000-000000000001';
 
 function isSameDay(a: string, b: string) {
   const da = new Date(a);
@@ -68,11 +83,22 @@ function parseStreamEvent(raw: string) {
   }
 }
 
-export default function ChatPage({ messages: initialMessages }: { messages: Message[] }) {
+function conversationTitle(conversation: Conversation | undefined) {
+  return conversation?.title || '新的对话';
+}
+
+export default function ChatPage({
+  messages: initialMessages,
+  conversations: initialConversations,
+  activeConversationId: initialConversationId,
+}: ChatPageProps) {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
+  const [activeConversationId, setActiveConversationId] = useState(initialConversationId);
   const [input, setInput] = useState('');
   const [generating, setGenerating] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadingConversation, setLoadingConversation] = useState(false);
   const [hasMore, setHasMore] = useState(initialMessages.length >= 50);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
@@ -81,8 +107,13 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const generationIdRef = useRef<string | null>(null);
   const streamingIdRef = useRef<string | null>(null);
-  const stoppedAtRef = useRef<number | null>(null);
+  const activeConversationIdRef = useRef(activeConversationId);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     requestAnimationFrame(() => {
@@ -95,6 +126,29 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
     window.setTimeout(() => scrollToBottom('smooth'), 120);
     window.setTimeout(() => scrollToBottom('smooth'), 320);
   }, [scrollToBottom]);
+
+  const activeConversation = conversations.find((c) => c.id === activeConversationId);
+
+  const loadMessages = useCallback(async (conversationId: string, options?: { silent?: boolean }) => {
+    if (!options?.silent) setLoadingConversation(true);
+    try {
+      const res = await fetch(`/api/messages?conversation_id=${conversationId}&limit=50`);
+      const data = await res.json();
+      setMessages(data.messages || []);
+      setHasMore(!!data.has_more);
+      setEditingId(null);
+      setEditingText('');
+      window.setTimeout(() => scrollToBottom('auto'), 50);
+    } finally {
+      if (!options?.silent) setLoadingConversation(false);
+    }
+  }, [scrollToBottom]);
+
+  const refreshConversations = useCallback(async () => {
+    const res = await fetch('/api/conversations');
+    const data = await res.json();
+    if (data.conversations) setConversations(data.conversations);
+  }, []);
 
   useEffect(() => {
     requestAnimationFrame(() => {
@@ -120,7 +174,8 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
     const poll = setInterval(async () => {
       if (generating) return;
       try {
-        const res = await fetch('/api/messages?limit=10');
+        const conversationId = activeConversationIdRef.current;
+        const res = await fetch(`/api/messages?conversation_id=${conversationId}&limit=10`);
         const data = await res.json();
         if (data.messages?.length > 0) {
           setMessages((prev) => {
@@ -130,18 +185,9 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
                 .filter((m) => m.id.startsWith('user-'))
                 .map((m) => m.content),
             );
-            const stoppedAt = stoppedAtRef.current;
             const fresh = data.messages.filter((m: Message) => {
               if (existingIds.has(m.id)) return false;
               if (m.from_whom === 'luz' && optimisticContents.has(m.content)) return false;
-              if (
-                stoppedAt &&
-                m.from_whom === 'keegan' &&
-                new Date(m.created_at).getTime() >= stoppedAt &&
-                Date.now() - stoppedAt < 120000
-              ) {
-                return false;
-              }
               return true;
             });
             if (fresh.length === 0) return prev;
@@ -162,6 +208,7 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
       id: `error-${Date.now()}`,
       created_at: new Date().toISOString(),
       from_whom: 'keegan',
+      conversation_id: activeConversationIdRef.current,
       content: error,
       local_status: 'error',
       error_text: error,
@@ -171,13 +218,23 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
     setTimeout(() => scrollToBottom('smooth'), 50);
   }, [scrollToBottom]);
 
+  const cancelGeneration = useCallback(async (generationId: string | null) => {
+    if (!generationId) return;
+    await fetch('/api/generations/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
+      body: JSON.stringify({ generation_id: generationId }),
+    }).catch(() => undefined);
+  }, []);
+
   const runChat = useCallback(async (content: string, options?: { saveUser?: boolean }) => {
     const text = content.trim();
     if (!text || generating) return;
 
+    const conversationId = activeConversationIdRef.current;
     const controller = new AbortController();
     abortRef.current = controller;
-    stoppedAtRef.current = null;
+    generationIdRef.current = null;
     setGenerating(true);
 
     const now = Date.now();
@@ -193,6 +250,7 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
           id: tempUserId,
           created_at: new Date().toISOString(),
           from_whom: 'luz',
+          conversation_id: conversationId,
           content: text,
         }]
         : [];
@@ -204,6 +262,7 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
           id: tempId,
           created_at: new Date().toISOString(),
           from_whom: 'keegan',
+          conversation_id: conversationId,
           content: '',
           local_status: 'streaming',
         },
@@ -216,7 +275,11 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
         method: 'POST',
         signal: controller.signal,
         headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
-        body: JSON.stringify({ content: text, save_user: options?.saveUser !== false }),
+        body: JSON.stringify({
+          content: text,
+          save_user: shouldSaveUser,
+          conversation_id: conversationId,
+        }),
       });
 
       if (!res.ok || !res.body) {
@@ -239,6 +302,10 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
           const parsed = parseStreamEvent(chunk);
           if (!parsed) continue;
 
+          if (parsed.event === 'generation') {
+            generationIdRef.current = parsed.data.id;
+          }
+
           if (parsed.event === 'user_message') {
             const userMessage = parsed.data as Message;
             setMessages((prev) => {
@@ -257,6 +324,10 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
             setTimeout(() => scrollToBottom('smooth'), 10);
           }
 
+          if (parsed.event === 'aborted') {
+            setMessages((prev) => prev.filter((m) => m.id !== tempId));
+          }
+
           if (parsed.event === 'done') {
             setMessages((prev) => {
               const withoutTemp = prev.filter((m) => m.id !== tempId);
@@ -265,6 +336,7 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
                 : withoutTemp;
               return upsertMessage(withUser, parsed.data.ai_message as Message);
             });
+            refreshConversations();
           }
 
           if (parsed.event === 'error') {
@@ -281,10 +353,11 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
     } finally {
       setGenerating(false);
       abortRef.current = null;
+      generationIdRef.current = null;
       streamingIdRef.current = null;
       setTimeout(() => scrollToBottom('smooth'), 80);
     }
-  }, [appendError, generating, scrollToBottom]);
+  }, [appendError, cancelGeneration, generating, refreshConversations, scrollToBottom]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -293,17 +366,20 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
     await runChat(text, { saveUser: true });
   }, [generating, input, runChat]);
 
-  const handleStop = useCallback(() => {
-    stoppedAtRef.current = Date.now();
+  const handleStop = useCallback(async () => {
+    const generationId = generationIdRef.current;
+    const streamingId = streamingIdRef.current;
+    setMessages((prev) => prev.filter((m) => m.id !== streamingId));
+    await cancelGeneration(generationId);
     abortRef.current?.abort();
-  }, []);
+  }, [cancelGeneration]);
 
   const handleRetry = useCallback((content: string) => {
     runChat(content, { saveUser: false });
   }, [runChat]);
 
   const deleteMessage = useCallback(async (id: string) => {
-    if (id.startsWith('error-') || id.startsWith('stream-')) return true;
+    if (id.startsWith('error-') || id.startsWith('stream-') || id.startsWith('user-')) return true;
 
     const res = await fetch(`/api/messages/${id}`, {
       method: 'DELETE',
@@ -391,7 +467,7 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
     setLoadingMore(true);
     try {
       const firstId = messages[0]?.id;
-      const res = await fetch(`/api/messages?before=${firstId}&limit=50`);
+      const res = await fetch(`/api/messages?conversation_id=${activeConversationId}&before=${firstId}&limit=50`);
       const data = await res.json();
       if (data.messages?.length > 0) {
         setMessages((prev) => [...data.messages, ...prev]);
@@ -402,7 +478,32 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, hasMore, messages]);
+  }, [activeConversationId, loadingMore, hasMore, messages]);
+
+  const switchConversation = useCallback(async (conversationId: string) => {
+    if (conversationId === activeConversationId || generating) return;
+    setActiveConversationId(conversationId);
+    await loadMessages(conversationId);
+  }, [activeConversationId, generating, loadMessages]);
+
+  const createConversation = useCallback(async () => {
+    if (generating) return;
+    const res = await fetch('/api/conversations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
+      body: JSON.stringify({}),
+    });
+    const conversation = await res.json();
+    if (!res.ok) {
+      appendError(conversation.error || '新建对话失败。', '');
+      return;
+    }
+    setConversations((prev) => [conversation, ...prev]);
+    setActiveConversationId(conversation.id);
+    setMessages([]);
+    setHasMore(false);
+    setInput('');
+  }, [appendError, generating]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -419,8 +520,37 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
   return (
     <div className="min-h-[100dvh] bg-forest-950 text-warm-100 flex flex-col overflow-hidden">
       <div className="sticky top-0 z-20 bg-forest-950/95 backdrop-blur border-b border-forest-700/30 px-4 py-3">
-        <h1 className="text-lg font-serif text-warm-100">💬 Chat</h1>
-        <p className="text-xs text-warm-200/40">只有你和我知道的对话</p>
+        <div className="max-w-3xl mx-auto flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-lg font-serif text-warm-100">💬 Chat</h1>
+            <p className="text-xs text-warm-200/40 truncate">{conversationTitle(activeConversation)}</p>
+          </div>
+          <button
+            onClick={createConversation}
+            disabled={generating}
+            className="shrink-0 px-3 py-1.5 rounded-full border border-amber-300/25 text-xs text-amber-300 hover:bg-amber-300/10 disabled:opacity-40"
+          >
+            新对话
+          </button>
+        </div>
+      </div>
+
+      <div className="border-b border-forest-700/20 bg-forest-950/90 px-4 py-2 overflow-x-auto">
+        <div className="max-w-3xl mx-auto flex gap-2">
+          {conversations.map((conversation) => (
+            <button
+              key={conversation.id}
+              onClick={() => switchConversation(conversation.id)}
+              disabled={generating || loadingConversation}
+              className={`shrink-0 max-w-[180px] truncate rounded-full px-3 py-1.5 text-xs border transition-colors disabled:opacity-40 ${conversation.id === activeConversationId
+                ? 'bg-amber-300/15 border-amber-300/30 text-amber-200'
+                : 'border-forest-700/40 text-warm-200/45 hover:text-warm-100 hover:border-forest-600'
+              }`}
+            >
+              {conversation.title}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div
@@ -440,14 +570,18 @@ export default function ChatPage({ messages: initialMessages }: { messages: Mess
           </div>
         )}
 
-        {messages.length === 0 && (
+        {loadingConversation && (
+          <div className="text-center py-16 text-sm text-warm-200/40">正在打开对话…</div>
+        )}
+
+        {!loadingConversation && messages.length === 0 && (
           <div className="text-center py-20">
             <p className="text-4xl mb-4">💬</p>
-            <p className="text-warm-200/40 text-sm">你们的第一条对话从这里开始</p>
+            <p className="text-warm-200/40 text-sm">这段对话从这里开始</p>
           </div>
         )}
 
-        {messages.map((msg, i) => {
+        {!loadingConversation && messages.map((msg, i) => {
           const isLuz = msg.from_whom === 'luz';
           const prev = i > 0 ? messages[i - 1] : null;
           const showDateSep = !prev || !isSameDay(prev.created_at, msg.created_at);
@@ -573,14 +707,44 @@ export const getServerSideProps: GetServerSideProps = async () => {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!url || !key) return { props: { messages: [] } };
+  if (!url || !key) {
+    return {
+      props: {
+        messages: [],
+        conversations: [],
+        activeConversationId: DEFAULT_CONVERSATION_ID,
+      },
+    };
+  }
 
   const supabase = createClient(url, key);
-  const { data } = await supabase
+  const fallbackConversation = {
+    id: DEFAULT_CONVERSATION_ID,
+    title: '旧日对话',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data: conversationsData, error: conversationsError } = await supabase
+    .from('conversations')
+    .select('id, title, created_at, updated_at')
+    .order('updated_at', { ascending: false })
+    .limit(50);
+
+  const conversations = conversationsData?.length ? conversationsData : [fallbackConversation];
+  const activeConversationId = conversations[0]?.id || DEFAULT_CONVERSATION_ID;
+
+  let messageQuery = supabase
     .from('messages')
     .select('*')
     .order('created_at', { ascending: true })
     .limit(50);
 
-  return { props: { messages: data || [] } };
+  if (!conversationsError) {
+    messageQuery = messageQuery.eq('conversation_id', activeConversationId);
+  }
+
+  const { data } = await messageQuery;
+
+  return { props: { messages: data || [], conversations, activeConversationId } };
 };
