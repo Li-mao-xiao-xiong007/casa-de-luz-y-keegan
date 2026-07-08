@@ -552,11 +552,69 @@ export default function ChatPage({
   const inputBottomPadding = 'calc(88px + env(safe-area-inset-bottom))';
 
   return (
-    <div className="min-h-[100dvh] bg-forest-950 text-warm-100 flex flex-col overflow-hidden">
+    <div className="min-h-[100dvh] bg-forest-950 text-warm-100 flex">
+      {/* ---- 桌面端侧边栏 ---- */}
+      <aside className="hidden md:flex fixed left-0 top-12 bottom-0 w-64 bg-forest-950/95 border-r border-forest-700/30 flex-col z-20">
+        <div className="p-4 border-b border-forest-700/30">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium text-warm-200">对话列表</h2>
+            <button
+              onClick={createConversation}
+              disabled={generating}
+              className="text-xs px-2.5 py-1 rounded-full border border-amber-300/25 text-amber-300 hover:bg-amber-300/10 disabled:opacity-40 transition-colors"
+            >
+              + 新建
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          {conversations.map((conversation) => (
+            <div
+              key={conversation.id}
+              className={`group flex items-center gap-1.5 rounded-lg border px-2.5 py-2 transition-colors ${
+                conversation.id === activeConversationId
+                  ? 'border-amber-300/25 bg-amber-300/8'
+                  : 'border-transparent hover:bg-forest-900/60'
+              }`}
+            >
+              <button
+                onClick={() => switchConversation(conversation.id)}
+                disabled={generating || loadingConversation}
+                className="min-w-0 flex-1 text-left disabled:opacity-40"
+              >
+                <p className="truncate text-[13px] text-warm-100">{conversation.title}</p>
+                <p className="text-[10px] text-warm-200/30">
+                  {new Date(conversation.updated_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
+                </p>
+              </button>
+              {conversations.length > 1 && (
+                <button
+                  onClick={() => deleteConversation(conversation)}
+                  disabled={generating}
+                  className="shrink-0 opacity-0 group-hover:opacity-100 px-1.5 py-0.5 rounded text-[10px] text-warm-200/30 hover:text-red-200 hover:bg-red-900/20 disabled:opacity-0 transition-opacity"
+                >
+                  删除
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      {/* ---- 主聊天区 ---- */}
+      <div className="flex-1 md:ml-64 flex flex-col min-h-[100dvh]">
       <div className="sticky top-0 z-20 bg-forest-950/95 backdrop-blur border-b border-forest-700/30 px-4 py-3">
-        <div className="max-w-3xl mx-auto min-w-0">
-          <h1 className="text-lg font-serif text-warm-100">💬 Chat</h1>
-          <p className="text-xs text-warm-200/40 truncate">{conversationTitle(activeConversation)}</p>
+        <div className="max-w-3xl mx-auto flex items-center gap-3 min-w-0">
+          <button
+            onClick={() => setShowConversations(true)}
+            className="md:hidden shrink-0 px-2.5 py-1.5 rounded-full border border-forest-600 text-xs text-warm-200/70 hover:border-amber-300/40 hover:text-warm-100 transition-colors"
+          >
+            对话
+          </button>
+          <div className="min-w-0">
+            <h1 className="text-base font-serif text-warm-100">💬 Chat</h1>
+            <p className="text-xs text-warm-200/40 truncate">{conversationTitle(activeConversation)}</p>
+          </div>
         </div>
       </div>
 
@@ -678,7 +736,7 @@ export default function ChatPage({
       </div>
 
       {showConversations && (
-        <div className="fixed inset-0 z-30 bg-forest-950/20" onClick={() => setShowConversations(false)}>
+        <div className="md:hidden fixed inset-0 z-30 bg-forest-950/20" onClick={() => setShowConversations(false)}>
           <div
             className="absolute inset-x-4 bottom-[calc(76px+env(safe-area-inset-bottom))] max-w-2xl mx-auto rounded-2xl border border-forest-700/50 bg-forest-950/98 shadow-2xl shadow-forest-950/60 overflow-hidden"
             onClick={(e) => e.stopPropagation()}
@@ -727,7 +785,7 @@ export default function ChatPage({
         </div>
       )}
 
-      <div className="fixed bottom-0 left-0 right-0 z-20 bg-forest-950/95 backdrop-blur border-t border-forest-700/30 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+      <div className="fixed bottom-0 left-0 right-0 md:left-64 z-20 bg-forest-950/95 backdrop-blur border-t border-forest-700/30 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
         <div className="max-w-2xl mx-auto flex gap-2">
           <button
             onClick={() => setShowConversations((value) => !value)}
@@ -761,6 +819,7 @@ export default function ChatPage({
             </button>
           )}
         </div>
+      </div>
       </div>
     </div>
   );
