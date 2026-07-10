@@ -11,14 +11,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method === 'POST') {
     if (!authWrite(req, res)) return;
 
-    const { type, layer, content, source, tags, parent_id, meta } = req.body;
+    const { type, layer, content, source, tags, parent_id, meta, tone } = req.body;
     if (!type || !layer || !content || !source) {
       return res.status(400).json({ error: 'missing required fields: type, layer, content, source' });
     }
+    if (tone !== undefined && !['warm', 'cold', 'neutral'].includes(tone)) {
+      return res.status(400).json({ error: 'invalid tone: expected warm, cold, or neutral' });
+    }
 
+    const memory = { type, layer, content, source, tags, parent_id, meta, ...(tone ? { tone } : {}) };
     const { data, error } = await supabaseAdmin
       .from('memories')
-      .insert({ type, layer, content, source, tags, parent_id, meta })
+      .insert(memory)
       .select()
       .single();
 

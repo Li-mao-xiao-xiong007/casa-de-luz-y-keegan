@@ -1,6 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { authWrite } from '@/lib/auth';
+import { formatMemoriesForPrompt, getRelevantMemories } from '@/lib/memory-recall';
 
 type ChatRole = 'system' | 'user' | 'assistant';
 type DeepSeekMessage = { role: ChatRole; content: string };
@@ -122,6 +123,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const systemPrompt = settings?.system_prompt || '你是 Keegan。';
     const temperature = parseFloat(settings?.temperature || '0.7');
     const contextCount = parseInt(settings?.context_messages || '10');
+    const configuredMemoryCount = parseInt(settings?.memory_context_count || '8');
+    const memoryContextCount = Number.isFinite(configuredMemoryCount)
+      ? Math.min(Math.max(configuredMemoryCount, 0), 20)
+      : 8;
 
     if (!apiKey) {
       await updateGeneration(generationId, 'failed');
@@ -138,8 +143,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .limit(Math.max(contextCount, 1));
 
     const recentMessages = (history || []).reverse();
+    const recalledMemories = await getRelevantMemories(supabaseAdmin, {
+      query: text,
+      limit: memoryContextCount,
+    });
+    const memoryContext = formatMemoriesForPrompt(recalledMemories);
+    const effectiveSystemPrompt = memoryContext
+      ? `${systemPrompt}\n\n${memoryContext}`
+      : systemPrompt;
+
     const deepseekMessages: DeepSeekMessage[] = [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: effectiveSystemPrompt },
       ...recentMessages.map((m) => ({
         role: toDeepSeekRole(m.from_whom),
         content: m.content,

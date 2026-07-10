@@ -31,7 +31,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method === 'PATCH') {
     if (!authWrite(req, res)) return;
 
-    const { content, layer, tags, source, type, status } = req.body;
+    const { content, layer, tags, source, type, status, tone } = req.body;
+
+    if (tone !== undefined && !['warm', 'cold', 'neutral'].includes(tone)) {
+      return res.status(400).json({ error: 'invalid tone: expected warm, cold, or neutral' });
+    }
 
     const updates: Record<string, any> = {};
     if (content !== undefined) updates.content = content;
@@ -40,6 +44,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (source !== undefined) updates.source = source;
     if (type !== undefined) updates.type = type;
     if (status !== undefined) updates.status = status;
+    if (tone !== undefined) updates.tone = tone;
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: 'no fields to update' });
