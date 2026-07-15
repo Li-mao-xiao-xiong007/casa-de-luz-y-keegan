@@ -145,6 +145,23 @@ function scoreMemory(
     }
   }
 
+  // 内容匹配：关键词出现在记忆正文里 (+2)
+  const normalizedContent = normalize(memory.content);
+  if (normalizedContent) {
+    for (const keyword of keywords) {
+      if (normalizedContent.includes(keyword)) {
+        score += 2;
+        // 截取命中片段用于展示（最多20字）
+        const idx = normalizedContent.indexOf(keyword);
+        const start = Math.max(0, idx - 8);
+        const end = Math.min(normalizedContent.length, idx + keyword.length + 8);
+        const snippet = normalizedContent.slice(start, end);
+        matchedBy.add(`内容:${snippet}`);
+        break; // 每条记忆只计一次内容匹配分
+      }
+    }
+  }
+
   const hasSemanticMatch = score > 0;
   if (hasSemanticMatch && queryTone !== 'neutral' && memory.tone === queryTone) {
     score += 1;

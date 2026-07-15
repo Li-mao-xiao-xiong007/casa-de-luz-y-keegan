@@ -1,7 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { authWrite } from '@/lib/auth';
-import { formatMemoriesForPrompt, getRelevantMemories } from '@/lib/memory-recall';
+import { formatMemoriesForPrompt, getRelevantMemories, extractRecallKeywords } from '@/lib/memory-recall';
 
 type ChatRole = 'system' | 'user' | 'assistant';
 type DeepSeekMessage = { role: ChatRole; content: string };
@@ -147,6 +147,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       query: text,
       limit: memoryContextCount,
     });
+
+    // 把召回调试信息发给前端（后续可做可视化面板）
+    sendEvent(res, 'recall_info', {
+      query: text,
+      keywords: extractRecallKeywords(text),
+      memories: recalledMemories.map((m) => ({
+        id: m.id,
+        score: m.score,
+        matched_by: m.matched_by,
+        content_preview: m.content.slice(0, 80),
+        tone: m.tone,
+        status: m.status,
+      })),
+    });
+
     const memoryContext = formatMemoriesForPrompt(recalledMemories);
     const effectiveSystemPrompt = memoryContext
       ? `${systemPrompt}\n\n${memoryContext}`
