@@ -34,7 +34,23 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
   // 编辑状态：正在编辑哪条记忆、临时编辑内容
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
+  const [editLayer, setEditLayer] = useState('moment');
+  const [editTags, setEditTags] = useState('');
   const [editSaving, setEditSaving] = useState(false);
+
+  // 折叠/展开状态
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const SUMMARY_LENGTH = 120;
+
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const filtered = layerFilter
     ? memories.filter((m) => m.layer === layerFilter)
@@ -85,6 +101,8 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
   const startEdit = useCallback((m: Memory) => {
     setEditingId(m.id);
     setEditContent(m.content);
+    setEditLayer(m.layer || 'moment');
+    setEditTags((m.tags || []).join(', '));
   }, []);
 
   // 保存编辑
@@ -95,19 +113,26 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
       const res = await fetch(`/api/memory/${editingId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY },
-        body: JSON.stringify({ content: editContent.trim() }),
+        body: JSON.stringify({
+          content: editContent.trim(),
+          layer: editLayer,
+          tags: editTags
+            ? editTags.split(/[,，]/).map((t) => t.trim()).filter(Boolean)
+            : [],
+        }),
       });
       if (!res.ok) throw new Error('更新失败');
       const updated = await res.json();
       setMemories((prev) => prev.map((m) => m.id === editingId ? { ...m, ...updated } : m));
       setEditingId(null);
       setEditContent('');
+      setEditTags('');
     } catch (e: any) {
       alert('更新失败：' + e.message);
     } finally {
       setEditSaving(false);
     }
-  }, [editingId, editContent]);
+  }, [editingId, editContent, editLayer, editTags]);
 
   // 删除记忆
   const handleDelete = useCallback(async (id: string) => {
@@ -145,7 +170,7 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
               value={form.content}
               onChange={(e) => setForm((p) => ({ ...p, content: e.target.value }))}
               placeholder="这一刻，有什么值得记住的..."
-              className="w-full bg-forest-900 border border-forest-700 rounded-lg p-4 text-warm-100 text-sm placeholder-warm-200/30 resize-none focus:outline-none focus:border-amber-300/50 transition-colors min-h-[120px]"
+              className="w-full bg-forest-900 border border-forest-700 rounded-lg p-4 text-warm-100 text-sm placeholder-warm-200/30 resize-y focus:outline-none focus:border-amber-300/50 transition-colors min-h-[180px]"
             />
             <div className="grid grid-cols-2 gap-3 mt-3">
               <div>
@@ -244,12 +269,37 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
                     <textarea
                       value={editContent}
                       onChange={(e) => setEditContent(e.target.value)}
-                      className="w-full bg-forest-900 border border-forest-700 rounded-lg p-3 text-warm-100 text-sm resize-none focus:outline-none focus:border-amber-300/50 transition-colors min-h-[100px]"
+                      className="w-full bg-forest-900 border border-forest-700 rounded-lg p-3 text-warm-100 text-sm resize-y focus:outline-none focus:border-amber-300/50 transition-colors min-h-[200px]"
                       autoFocus
                     />
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs text-warm-200/50 mb-1 block">层级</label>
+                        <select
+                          value={editLayer}
+                          onChange={(e) => setEditLayer(e.target.value)}
+                          className="w-full bg-forest-900 border border-forest-700 rounded px-3 py-2 text-sm text-warm-100 focus:outline-none focus:border-amber-300/50"
+                        >
+                          <option value="moment">瞬间</option>
+                          <option value="basic">基础</option>
+                          <option value="relation">关系</option>
+                          <option value="dynamic">动态</option>
+                          <option value="private">私密</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-warm-200/50 mb-1 block">标签（逗号分隔）</label>
+                        <input
+                          value={editTags}
+                          onChange={(e) => setEditTags(e.target.value)}
+                          placeholder="如：日常,瞬间"
+                          className="w-full bg-forest-900 border border-forest-700 rounded px-3 py-2 text-sm text-warm-100 placeholder-warm-200/30 focus:outline-none focus:border-amber-300/50"
+                        />
+                      </div>
+                    </div>
                     <div className="flex justify-end gap-2">
                       <button
-                        onClick={() => { setEditingId(null); setEditContent(''); }}
+                        onClick={() => { setEditingId(null); setEditContent(''); setEditTags(''); }}
                         className="px-3 py-1.5 text-xs text-warm-200/40 hover:text-warm-100 transition-colors"
                       >
                         取消
@@ -265,9 +315,33 @@ export default function MemoriesPage({ memories: initialMemories }: { memories: 
                   </div>
                 ) : (
                   <>
-                    <p className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap">
-                      {m.content}
-                    </p>
+                    {(() => {
+                      const isLong = m.content.length > SUMMARY_LENGTH;
+                      const isExpanded = expandedIds.has(m.id);
+                      const showFull = !isLong || isExpanded;
+                      const displayText = showFull
+                        ? m.content
+                        : m.content.slice(0, SUMMARY_LENGTH) + '...';
+
+                      return (
+                        <>
+                          <p
+                            className="text-warm-100 text-sm leading-relaxed whitespace-pre-wrap cursor-pointer"
+                            onClick={() => isLong && toggleExpand(m.id)}
+                          >
+                            {displayText}
+                          </p>
+                          {isLong && (
+                            <button
+                              onClick={() => toggleExpand(m.id)}
+                              className="text-xs text-amber-300/60 hover:text-amber-300 mt-1 transition-colors"
+                            >
+                              {isExpanded ? '收起 ▲' : '展开全部 ▼'}
+                            </button>
+                          )}
+                        </>
+                      );
+                    })()}
                     {m.tags?.length > 0 && (
                       <div className="flex gap-1 mt-3 flex-wrap">
                         {m.tags.map((t: string) => (
