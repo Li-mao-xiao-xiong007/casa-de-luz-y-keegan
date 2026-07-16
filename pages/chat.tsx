@@ -2,6 +2,21 @@ import { GetServerSideProps } from 'next';
 import { createClient } from '@supabase/supabase-js';
 import { useState, useEffect, useRef, useCallback } from 'react';
 
+type RecallMemory = {
+  id: string;
+  score: number;
+  matched_by: string[];
+  content_preview: string;
+  tone: string;
+  status: string;
+};
+
+type RecallInfo = {
+  query: string;
+  keywords: string[];
+  memories: RecallMemory[];
+};
+
 type Message = {
   id: string;
   created_at: string;
@@ -12,6 +27,7 @@ type Message = {
   local_status?: 'streaming' | 'error';
   error_text?: string;
   retry_content?: string;
+  recall_info?: RecallInfo | null;
 };
 
 type Conversation = {
@@ -103,6 +119,16 @@ export default function ChatPage({
   const [hasMore, setHasMore] = useState(initialMessages.length >= 50);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
+  const [expandedRecallIds, setExpandedRecallIds] = useState<Set<string>>(new Set());
+
+  const toggleRecallPanel = useCallback((id: string) => {
+    setExpandedRecallIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -307,6 +333,13 @@ export default function ChatPage({
             generationIdRef.current = parsed.data.id;
           }
 
+          if (parsed.event === 'recall_info') {
+            const info = parsed.data as RecallInfo;
+            setMessages((prev) => prev.map((m) => (
+              m.id === tempId ? { ...m, recall_info: info } : m
+            )));
+          }
+
           if (parsed.event === 'user_message') {
             const userMessage = parsed.data as Message;
             setMessages((prev) => {
@@ -331,11 +364,14 @@ export default function ChatPage({
 
           if (parsed.event === 'done') {
             setMessages((prev) => {
+              const tempMsg = prev.find((m) => m.id === tempId);
+              const recallInfo = tempMsg?.recall_info || null;
               const withoutTemp = prev.filter((m) => m.id !== tempId);
               const withUser = parsed.data.user_message
                 ? upsertMessage(withoutTemp, parsed.data.user_message as Message)
                 : withoutTemp;
-              return upsertMessage(withUser, parsed.data.ai_message as Message);
+              const aiMessage = { ...(parsed.data.ai_message as Message), recall_info: recallInfo };
+              return upsertMessage(withUser, aiMessage);
             });
             refreshConversations();
           }
@@ -723,6 +759,42 @@ export default function ChatPage({
                         <button onClick={() => handleRetry(msg.retry_content || '')} disabled={generating} className="hover:text-amber-300 disabled:opacity-30">
                           重试
                         </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 召回调试面板 — 仅 AI 消息且有 recall_info 时显示 */}
+                  {!isLuz && msg.recall_info && msg.recall_info.memories.length > 0 && (
+                    <div className="mt-2 max-w-full">
+                      <button
+                        onClick={() => toggleRecallPanel(msg.id)}
+                        className="flex items-center gap-1.5 text-[10px] text-warm-200/30 hover:text-amber-300/60 transition-colors"
+                      >
+                        <span>🧠</span>
+                        <span>召回了 {msg.recall_info.memories.length} 条记忆</span>
+                        <span className="text-warm-200/20">
+                          {expandedRecallIds.has(msg.id) ? '收起 ▲' : '展开 ▼'}
+                        </span>
+                      </button>
+                      {expandedRecallIds.has(msg.id) && (
+                        <div className="mt-1.5 space-y-1.5 text-[10px] text-warm-200/40 border-l border-forest-700/40 pl-2.5">
+                          {msg.recall_info.keywords.length > 0 && (
+                            <div>
+                              <span className="text-amber-300/40">关键词：</span>
+                              <span>{msg.recall_info.keywords.slice(0, 8).join(' · ')}</span>
+                            </div>
+                          )}
+                          {msg.recall_info.memories.map((mem) => (
+                            <div key={mem.id} className="flex gap-1.5">
+                              <span className="shrink-0 text-amber-300/50 font-mono">{mem.score.toFixed(1)}</span>
+                              <span className="shrink-0 text-warm-200/25">
+                                {mem.tone === 'warm' ? '暖' : mem.tone === 'cold' ? '冷' : '·'}/{mem.status === 'stable' ? '固' : '活'}
+                              </span>
+                              <span className="truncate text-warm-200/35">{mem.content_preview}</span>
+                              <span className="shrink-0 text-amber-300/25">{mem.matched_by.join(',')}</span>
+                            </div>
+                          ))}
+                        </div>
                       )}
                     </div>
                   )}
